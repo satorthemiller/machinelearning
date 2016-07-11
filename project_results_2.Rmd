@@ -1,0 +1,147 @@
+---
+title: "Machine Learning Course Project: Analysis of Weight Lifting Exercises Dataset "
+author: "Jim"
+date: "July 10, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Summary 
+
+This analysis was done to determine whether a particular form of exercise (barbell lifting) is performed correctly, using accelerometers (data belt, forearm, arm, and dumbell) of six participants. Test set and training set contain the same participants. Florid definition of the different measurements were not immediately accessible, impacting some judgements made here and there (e.g. to exclude variables labeled "totals"). 
+
+The goal of the (modeling) exercise is to predict the manner in which the participants did the (physical) exercise. The dataset has over 100 fields resulting in a single field (classe) representing how well the person did the exercise. We are trying to model classe against the provided variables. 
+
+
+## Getting and Exploring Data
+
+Data used was from the following provided files "pml-training.csv" and pml-testing.csv. 
+
+
+```{r}
+library(caret); library(knitr);library(ggplot2)
+setwd("C:\\Users\\jhiggin\\Documents\\github\\machinelearning"); getwd()
+trainingpml <- read.csv(file = "pml-training.csv" )
+testingpml <- read.csv(file = "pml-testing.csv" )
+
+```
+
+
+First variables (columns) where there were mostly non-values (either formal NAs or blanks) were removed. 
+
+```{r}
+useless<-rep(NA, dim(trainingpml)[2]);classcols<-rep(NA, dim(trainingpml)[2])
+for (i in 1:dim(trainingpml)[2]){
+  NAorblanktotal<-sum(is.na(trainingpml[, i])|trainingpml[,i]=="")
+  useless[i]<-(NAorblanktotal/dim(trainingpml)[1]>.50)
+       # will evaluate isna first and then if not isna counts the blanks 
+}
+trainingpml<- trainingpml[,!useless]
+
+
+```
+
+Then correlations were investigated. From the correlation matrix created by the above code, the whole thing is too big to reproduce here, and I centered in on pairs with rho>.85 (and decided to separate integer variables from numerics). I removed all "totals" even when they don't obviously correlate with other vars, jut because the idea of totaling suggests they encompass components already delivered. I also remove timestamps, but keep people names, as there are few and they (all six) appear in both the test and training sets.  However if the purpose were to say something intelligent about how exercise is done, names might then be removed. Below shows the most correlation results, numerics and integers. 
+
+
+
+```{r}
+vectornumeric=NULL;vectorinteger=NULL;  
+for (i in 1:dim(trainingpml)[2]){
+  classcols<-class(trainingpml[,i])
+  if(classcols=="numeric"){
+    vectornumeric=c(vectornumeric,names(trainingpml)[i])}
+  else if (classcols=="integer"){
+    vectorinteger=c(vectorinteger,names(trainingpml)[i])}  
+  else{}
+}
+
+M<- abs(cor(trainingpml[,vectornumeric])) 
+diag(M)<-0  #remove as zero the diagonal (corr with itself)
+which (M>.85, arr.ind=T)  # arr.ind: return array indicies when true
+M<- abs(cor(trainingpml[,vectorinteger])) 
+diag(M)<-0  #remove as zero the diagonal (corr with itself)
+which (M>.85, arr.ind=T)  # arr.ind: return array indicies when true
+
+removevars<-c("gyros_arm_x",  "gyros_dumbbell_x", "gyros_forearm_z" , "total_accel_belt", "total_accel_arm", "total_accel_dumbbell", "total_accel_forearm")
+removevars<-c(removevars, "X", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp",  "new_window", "num_window")
+trainingpml<-trainingpml[, !names(trainingpml)%in% removevars]
+trainingpml<- trainingpml[complete.cases(trainingpml),]
+
+```
+My removed variable list (in above code) includes some of these correlated  variables and also "X" (index) and then all variable names including "timestamp" and "window".  This takes the dataset down to 47 fields. 
+
+I split the training set in to to subsets, all training done is with the "subtraining" set. 
+
+
+```{r}
+set.seed(44444)
+inTrain = createDataPartition(trainingpml$classe, p = .7, list=FALSE)
+subtraining = trainingpml[inTrain,] # [1] 13737    48
+subtesting = trainingpml[ - inTrain,]
+```
+
+The dataset "Subtest" is used to evaluate out of sample errors.  And the provided testset is used only to derive predictions from my favorite model (rf). Once I arrived at my favored model (rf) I could have, as a final step, trained using the whole training set, and used that to estimate the "test 20", but I did not, the machine takes just too long to solve. 
+
+## Analysis
+
+### Decision tree, trained with cross validation
+ 
+I started by fitting the first model study, a simple decision tree, which got the following dendagram.  
+
+```{r}
+set.seed(33333); library(rattle)
+tc <- trainControl("cv",10)
+modFitpml_rpart<-train(classe ~., method="rpart", data=subtraining, trControl=tc)
+fancyRpartPlot(modFitpml_rpart$finalModel)
+
+```
+
+Results however are disappointing, the Accuracy (= 1.0 minus out of sample error) is only 50%:
+```{r}
+pml_pred_rpart<- predict(modFitpml_rpart, newdata=subtesting)
+pml_rfmodelAcc <- confusionMatrix(pml_pred_rpart, subtesting$classe)[[3]][1]
+pml_rfmodelAcc
+
+```
+
+### Random Forest, trained with "repeated cross validation" 
+
+A training model was fit using Random Forest, which fit very well and is my choice for best model and from which I submit my predictions for the 20 test cases. 
+
+Below show its accuracy (99%), its prediction on the furnished test set, and the imporant variables (roll belt topping the list).
+
+
+```{r}
+
+rfControl = trainControl(method = "repeatedcv", number = 5, repeats = 1)  
+pml_rfmodel <- train(classe ~ ., method = "rf", data = subtraining, trControl = rfControl)
+pml_pred_rf<- predict(pml_rfmodel, subtesting)
+pml_rfmodelAcc <- confusionMatrix(pml_pred_rf, subtesting$classe)[[3]][1]
+pml_rfmodelAcc
+
+pml_pred_rf_testset<- predict(pml_rfmodel, testingpml)
+pml_pred_rf_testset
+```
+
+Accuracy as I say is very high (.99, thus oos error .01).  Testset (20) predictions from this are:
+[1] B A B A A E D B A A B C B A E E A B B B  -- (remove this)
+
+Below shows the leading variables (variable importance function) in the above fit.  
+```{r}
+
+imp <- varImp(pml_rfmodel)
+imp
+
+```
+
+
+##Conclusion
+
+Today I also tried gbm, which like rf took a long time to train, but ended up on successive tries crashing R, so... a big disappointment there, but it is hard to imagine it could have done much better than rf. 
+
+The model obtained with rf was sufficient to fit the holdout sample very well, and so no other model is needed. For gbm maybe the answer lies in the number of variables, that if I had used PCA to reduce the number of variables it might have run.  But -- ran out of time and energy.  For another day. No, not really. 
+
